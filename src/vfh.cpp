@@ -26,6 +26,11 @@ public:
 
     void getScan(sensor_msgs::LaserScan);
 
+    void getTarget(geometry_msgs::Twist tar_msg);
+
+    // helper function to transform between Euler angles and Quaternion
+    void EulerQuaternion(geometry_msgs::PoseStamped odom);
+
     // get m for each beta (in each angle)
     void computeMag();
 
@@ -51,9 +56,6 @@ public:
 
     // helper function to decide the direction relationship of two sectors
     int checkdirection(int sec1, int sec2);
-
-    // helper function to transform between Euler angles and Quaternion
-    void EulerQuaternion(geometry_msgs::PoseStamped odom);
 
     // helper function to extend a line between two point p1, p2 with a length Len
     std::pair<double, double> extendLine(std::pair<double, double> p1, std::pair<double, double> p2, double Len);
@@ -93,7 +95,10 @@ private:
 
     int prev_sector;
 
+    double target_position[2]; // x, y
     int target_sector;
+    double tar_dist;
+
     double Euler[3]; // yaw-pitch-roll
     double Rob_Pos[3]; // x, y, z
 
@@ -108,6 +113,7 @@ private:
     ros::NodeHandle nh;
     ros::Subscriber scan_sub;
     ros::Subscriber odom_sub;
+    ros::Subscriber target_sub;
     ros::Publisher scan_pub;
     ros::Publisher vel_pub;
     ros::Publisher scan_pub_3;
@@ -140,11 +146,14 @@ VFHfollowing::VFHfollowing()
     lower_th = 0.616; // 0.30cm
 
     // the sector target direction is in
+    target_position[0] = 0.2;
+    target_position[1] = 0.0;
     target_sector = 0;
+
     // the se4ctor of current orientation(seems to be always 0, maybe useless here)
     current_orientation = 0;
+    tar_dist = 0.2;
 
-    // the size limit of a valley, used to find candidate directions
     s_max = 6;
 
     m1 = 3;
@@ -154,8 +163,8 @@ VFHfollowing::VFHfollowing()
     prev_sector = -1;
 
     scan_sub = nh.subscribe("/scan", 1, &VFHfollowing::getScan, this);
-    // odom_sub = nh.subscribe("/localization/odometry_pose", 1, &VFHfollowing::EulerQuaternion, this);
-    // tar_sub = nh.subscribe("")
+    odom_sub = nh.subscribe("/localization/odometry_pose", 1, &VFHfollowing::EulerQuaternion, this);
+    target_sub = nh.subscribe("/target", 1, &VFHfollowing::getTarget, this);
 
     scan_pub = nh.advertise<std_msgs::Float32MultiArray>("histogram", 1);
     vel_pub = nh.advertise<geometry_msgs::Twist>("/motor_controller/twist", 1);
@@ -253,6 +262,44 @@ void VFHfollowing::getScan(sensor_msgs::LaserScan scan_msg)
     }
 }
 
+void VFHfollowing::getTarget(geometry_msgs::Twist tar_msg)
+{
+    // get the target position
+    // and compute the target sector using odometry
+    target_position[0] = tar_msg.linear.x;
+    target_position[1] = tar_msg.linear.y;
+
+    // transform the target point in the robot frame
+    double hr = Euler[0];
+    double xr = Rob_Pos[0];
+    double yr = Rob_Pos[1];
+
+    // ROS_INFO("target(%.3f, %.3f), robot(%.3f, %.3f)", target_position[0], target_position[1], xr, yr);
+
+    double delta_x = target_position[0] - xr;
+    double delta_y = target_position[1] - yr;
+    tar_dist = sqrt(delta_x*delta_x + delta_y*delta_y);
+
+    if( tar_dist < 0.1 )
+    {
+        ROS_INFO("we are here!");
+    }
+    // double delta_x = target_position[0] - xr;
+    // double delta_y = target_position[1] - yr;
+    // double target_dist = sqrt(delta_x*delta_x + delta_y*delta_y);
+    // target position in the robot frame
+    double tar_x = (target_position[0] - xr) * sin(hr) + (target_position[1] - yr) * cos(hr);
+    double tar_y = (target_position[0] - xr) * cos(hr) - (target_position[1] - yr) * sin(hr);
+
+    ROS_INFO("target in rob frame (%.3f, %.3f)", tar_x, tar_y);
+
+    double theta = fmod(atan2(tar_y, tar_x) + 4.7124, 6.2832) ;
+
+    int degree = (int)round(theta / 3.14159 * 180);
+
+    target_sector = ((degree + 4)%360)/9;
+}
+
 void VFHfollowing::computeMag ()
 {
     double temp;
@@ -267,6 +314,7 @@ void VFHfollowing::computeMag ()
     int add_num;
 
     double average;
+
 
     double true_dist;
     double item1;
@@ -288,6 +336,8 @@ void VFHfollowing::computeMag ()
         // ss << ' ' << (item1+sqrt(item1*item1 + 961.32))/200.0;
     }
     // std::cerr << ss.str() << std::endl;
+
+
     // eliminate the outliers
     /*
     for(int i = 0; i < 360; i++)
@@ -647,13 +697,26 @@ int VFHfollowing::checkdirection(int sec1, int sec2)
 
 void VFHfollowing::computeSteering()
 {
+
     // compute for the ang_vel and lin_vel for robot to go
     double lin_vel, ang_vel;
     geometry_msgs::Twist vel_msg;
     lin_vel = 0.1; // set a fixed linear velocity first
 
+    double delta_x = target_position[0] - Rob_Pos[0];
+    double delta_y = target_position[1] - Rob_Pos[1];
+    tar_dist = sqrt(delta_x*delta_x + delta_y*delta_y);
+
+
     // special case, when it just needs to go straight
-    if(prev_sector == 0)
+    if(tar_dist < 0.1)
+    {
+        vel_msg.linear.x = 0.0;
+        vel_msg.angular.z = 0.0;
+        vel_pub.publish(vel_msg);
+        return;
+    }
+    else if(prev_sector == 0)
     {
         vel_msg.linear.x = lin_vel;
         vel_msg.angular.z = 0.0;
@@ -681,6 +744,8 @@ void VFHfollowing::computeSteering()
     }
     else{
         // first. compute goal point in robot frame
+        ROS_INFO("distance: %f", tar_dist);
+
         double dist_list[4] = {0.05, 0.15, 0.20, 0.30};
         double direction = ((double)prev_sector*9+90.0)*3.14159/180.0;
 
@@ -782,7 +847,7 @@ void VFHfollowing::computeSteering()
         }
         // send out velocity
         vel_msg.linear.x = lin_vel;
-        vel_msg.angular.z = tar_radius[valid_max] * lin_vel;
+        vel_msg.angular.z = lin_vel / tar_radius[valid_max];
         vel_pub.publish(vel_msg);
     }
 }
@@ -841,9 +906,10 @@ void VFHfollowing::EulerQuaternion(geometry_msgs::PoseStamped odom)
 
     yaw = angles::normalize_angle_positive(yaw);
 
-    Euler[0] = fmod(yaw, 6.2832);
+    Euler[0] = fmod(yaw, 6.2832); // yaw angle in radius
     Euler[1] = 0;
     Euler[2] = 0;
+
 }
 
 void VFHfollowing::run()
@@ -911,7 +977,7 @@ void VFHfollowing::run()
 
             scan_pub.publish(msg);
             // Euler angle here is changed into degrees
-            // ROS_INFO("Euler angles: %f, %f, %f || Robot position: %f, %f, %f ", Euler[0]*(180.0/3.14159), Euler[1], Euler[2], Rob_Pos[0], Rob_Pos[1], Rob_Pos[2] );
+            ROS_INFO("Robot angle: %f || Robot position: %f, %f || Target sector %d ", Euler[0]*(180.0/3.14159), Rob_Pos[0], Rob_Pos[1], target_sector );
 
         }
 
