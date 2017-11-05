@@ -136,12 +136,15 @@ VFHfollowing::VFHfollowing()
     range_min = 0.1;
     range_max = 2.0;
 
-    upper_th = 0.67; // 0.22cm
-    lower_th = 0.586; // 0.35cm
+    upper_th = 0.73; // 0.15cm
+    lower_th = 0.616; // 0.30cm
 
+    // the sector target direction is in
     target_sector = 0;
+    // the se4ctor of current orientation(seems to be always 0, maybe useless here)
     current_orientation = 0;
 
+    // the size limit of a valley, used to find candidate directions
     s_max = 6;
 
     m1 = 3;
@@ -152,9 +155,10 @@ VFHfollowing::VFHfollowing()
 
     scan_sub = nh.subscribe("/scan", 1, &VFHfollowing::getScan, this);
     // odom_sub = nh.subscribe("/localization/odometry_pose", 1, &VFHfollowing::EulerQuaternion, this);
+    // tar_sub = nh.subscribe("")
 
     scan_pub = nh.advertise<std_msgs::Float32MultiArray>("histogram", 1);
-    vel_pub = nh.advertise<geometry_msgs::Twist>("vfh_vel", 1);
+    vel_pub = nh.advertise<geometry_msgs::Twist>("/motor_controller/twist", 1);
     scan_pub_3 = nh.advertise<std_msgs::Float32MultiArray>("histogram_3", 1);
 
     std::vector<int> valley_temp;
@@ -264,10 +268,26 @@ void VFHfollowing::computeMag ()
 
     double average;
 
-    for(int i = 0; i < 360; i++)
+    double true_dist;
+    double item1;
+
+    // std::stringstream ss;
+    // ss << "dist: ";
+    for(int i = 0; i < 180; i++)
     {
-        scan_mag[i] = certainty[i] * certainty[i] * (para_a -  para_b * sqrt(raw_scan[i]) );
+        item1 = -17*cos((double)(i+1)*3.1415926/180.0);
+        true_dist = raw_scan[i] - (item1+sqrt(item1*item1 + 961.32))/200.0;
+        scan_mag[i] = certainty[i] * certainty[i] * (para_a -  para_b * sqrt(true_dist) );
+        // ss << ' ' << (item1+sqrt(item1*item1 + 961.32))/200.0;
     }
+    for(int i = 180; i < 360; i++)
+    {
+        item1 = 17*cos((double)(i-179)*3.1415926/180.0);
+        true_dist = raw_scan[i] - (item1+sqrt(item1*item1 + 961.32))/200.0;
+        scan_mag[i] = certainty[i] * certainty[i] * (para_a -  para_b * sqrt(true_dist) );
+        // ss << ' ' << (item1+sqrt(item1*item1 + 961.32))/200.0;
+    }
+    // std::cerr << ss.str() << std::endl;
     // eliminate the outliers
     /*
     for(int i = 0; i < 360; i++)
@@ -661,7 +681,7 @@ void VFHfollowing::computeSteering()
     }
     else{
         // first. compute goal point in robot frame
-        double dist_list[4] = {0.05, 0.15, 0.25, 0.35};
+        double dist_list[4] = {0.05, 0.15, 0.20, 0.30};
         double direction = ((double)prev_sector*9+90.0)*3.14159/180.0;
 
         // ROS_INFO("sector: %d, direction: %f", prev_sector, direction);
@@ -731,7 +751,7 @@ void VFHfollowing::computeSteering()
             valid_arc = true;
             for(int j = 0; j < zone_num; j++)
             {
-                Len = fabs(tar_radius[i]); // 0.14 is the distance we want to guarrantee so that our corner won't hit the wall
+                Len = fabs(tar_radius[i]) + 0.14; // 0.14 is the distance we want to guarrantee so that our corner won't hit the wall
                 px = -tar_radius[i] + Len * cos(check_ang[j]);
                 py = 0.0 + Len * sin(check_ang[j]);
                 // ROS_INFO("px: %f, py: %f", px, py);
@@ -757,7 +777,7 @@ void VFHfollowing::computeSteering()
             {
                 valid_max = i;
                 arc_points = check_point;
-                ROS_INFO("chosen distance: %f ", dist_list[i]);
+                // ROS_INFO("chosen distance: %f ", dist_list[i]);
             }
         }
         // send out velocity
