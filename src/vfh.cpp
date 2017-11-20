@@ -15,8 +15,6 @@
 #include "geometry_msgs/PoseStamped.h"
 #include "geometry_msgs/Twist.h"
 
-#define TARGET_NUMBER 4
-
 class VFHfollowing
 {
 public:
@@ -76,6 +74,8 @@ private:
     double certainty[360];
 
     int countdown;
+    int TARGET_NUMBER;
+    int command_number;
 
     int sector_size;
     double one_degree;
@@ -99,7 +99,7 @@ private:
     int prev_sector;
 
     double target_position[2]; // x, y
-    double target_sequence[TARGET_NUMBER][2];
+    std::vector< std::pair<double, double> > target_sequence;
     int current_tar;
     int target_sector;
     double tar_dist;
@@ -133,6 +133,8 @@ VFHfollowing::VFHfollowing()
     }
 
     countdown = 1;
+    TARGET_NUMBER = 1;
+    command_number = -1;
     threshold = 0.8;
 
     para_a = 1.0;
@@ -152,7 +154,7 @@ VFHfollowing::VFHfollowing()
 
     // the sector target direction is in
     target_position[0] = 0.2;
-    target_position[1] = 0.0;
+    target_position[1] = 0.6;
     current_tar = -1;
     target_sector = 0;
 
@@ -169,8 +171,8 @@ VFHfollowing::VFHfollowing()
     prev_sector = -1;
 
     scan_sub = nh.subscribe("/scan", 1, &VFHfollowing::getScan, this);
-    odom_sub = nh.subscribe("/localization/odometry_pose", 1, &VFHfollowing::EulerQuaternion, this);
-    target_sub = nh.subscribe("/target", 1, &VFHfollowing::getTarget, this);
+    odom_sub = nh.subscribe("/localization/pose", 1, &VFHfollowing::EulerQuaternion, this);
+    target_sub = nh.subscribe("/guider", 1, &VFHfollowing::getTarget, this);
 
     scan_pub = nh.advertise<std_msgs::Float32MultiArray>("histogram", 1);
     vel_pub = nh.advertise<geometry_msgs::Twist>("/motor_controller/twist", 1);
@@ -276,48 +278,66 @@ void VFHfollowing::getTarget(std_msgs::Float32MultiArray tar_msg)
     if(current_tar == -1)
         current_tar = 0;
 
+    if (command_number != (int)tar_msg.data[tar_msg.data.size()-1])
+    {
+        command_number = (int)tar_msg.data[tar_msg.data.size()-1];
+        current_tar = 0;
+        ROS_INFO("new command!");
+    }
+
+    target_sequence.clear();
+    TARGET_NUMBER = (tar_msg.data.size()-1)/2;
+    // ROS_INFO("target number %d", TARGET_NUMBER);
+
     std::stringstream ss;
     ss << "target sequence: ";
     for(int i = 0; i < 2*TARGET_NUMBER; i++)
     {
         ss << "[ ";
-        target_sequence[i/2][0] = tar_msg.data[i];
+        target_sequence.push_back(std::make_pair(tar_msg.data[i], tar_msg.data[i+1]));
         ss << tar_msg.data[i] << ", ";
         i++;
-        target_sequence[i/2][1] = tar_msg.data[i];
         ss << tar_msg.data[i] << " ], ";
     }
     std::cerr << ss.str();
-
-    target_position[0] = target_sequence[current_tar][0];
-    target_position[1] = target_sequence[current_tar][1];
 
     // transform the target point in the robot frame
     double hr = Euler[0];
     double xr = Rob_Pos[0];
     double yr = Rob_Pos[1];
 
-    // ROS_INFO("target(%.3f, %.3f), robot(%.3f, %.3f)", target_position[0], target_position[1], xr, yr);
-
-    double delta_x = target_position[0] - xr;
-    double delta_y = target_position[1] - yr;
-    tar_dist = sqrt(delta_x*delta_x + delta_y*delta_y);
-
-    if( tar_dist < 0.1 )
-    {
-        ROS_INFO("we are here!");
-        if(current_tar < TARGET_NUMBER-1)
-            current_tar += 1;
-    }
-    // double delta_x = target_position[0] - xr;
-    // double delta_y = target_position[1] - yr;
-    // double target_dist = sqrt(delta_x*delta_x + delta_y*delta_y);
     // target position in the robot frame
-    double tar_x = (target_position[0] - xr) * sin(hr) - (target_position[1] - yr) * cos(hr);
-    double tar_y = (target_position[0] - xr) * cos(hr) + (target_position[1] - yr) * sin(hr);
+    double tar_x;
+    double tar_y;
 
-    // goal_pose.position.x = (xg - xr) * cos(hr) + (yg - yr) * sin(hr);
-    // goal_pose.position.y = -(xg - xr) * sin(hr) + (yg - yr) * cos(hr);
+    while(true)
+    {
+        target_position[0] = target_sequence[current_tar].first;
+        target_position[1] = target_sequence[current_tar].second;
+
+        // ROS_INFO("target(%.3f, %.3f), robot(%.3f, %.3f)", target_position[0], target_position[1], xr, yr);
+
+        double delta_x = target_position[0] - xr;
+        double delta_y = target_position[1] - yr;
+        tar_dist = sqrt(delta_x*delta_x + delta_y*delta_y);
+
+        tar_x = (target_position[0] - xr) * sin(hr) - (target_position[1] - yr) * cos(hr);
+        tar_y = (target_position[0] - xr) * cos(hr) + (target_position[1] - yr) * sin(hr);
+
+        if( tar_dist < 0.11|| (tar_y < 0 && tar_dist < 0.13) )
+        {
+            ROS_INFO("we are here!");
+            if(current_tar < TARGET_NUMBER-1)
+                current_tar += 1;
+            else{
+                break;
+            }
+        }
+        else
+        {
+            break;
+        }
+    }
 
     ROS_INFO("target in rob frame (%.3f, %.3f)", tar_x, tar_y);
 
@@ -336,8 +356,8 @@ void VFHfollowing::computeMag ()
 
     // preprocess the magnitude
 
-    double window;
-    window = raw_scan[0]+raw_scan[1]+raw_scan[2]+raw_scan[359]+raw_scan[358];
+    // double window;
+    // window = raw_scan[0]+raw_scan[1]+raw_scan[2]+raw_scan[359]+raw_scan[358];
     int minus_num;
     int add_num;
 
@@ -497,39 +517,6 @@ void VFHfollowing::getBPH ()
         bh[i] = 1;
     }
 
-    /*
-    for(int i = 0; i < ph.size(); i++)
-    {
-        temp = ph[i];
-        if (temp > upper_th)
-        {
-            // higher than upper -> obstacle
-            bh.push_back(1);
-        }
-        else if(temp < lower_th)
-        {
-            // lower than lower -> free space
-            bh.push_back(0);
-        }
-        else
-        {
-            // if first is already in the middle
-            if(i == 0)
-            {
-                if (temp > (upper_th+lower_th)/2.0)
-                {
-                    bh.push_back(1);
-                }
-                else{
-                    bh.push_back(0);
-                }
-            }
-            else{
-                bh.push_back(bh[i-1]);
-            }
-        }
-    }
-    */
     if (bh.size() != ph.size())
     { ROS_INFO("binary histogram wrong size! bh: %d ph: %d ", (int)bh.size(), (int)ph.size() ); }
 
@@ -575,14 +562,14 @@ void VFHfollowing::getMPH ()
             temp_bh[i] = 1;
 
             min_dist = pow( (para_a - ph[i])/para_b ,2.0) + 0.04;
-            ROS_INFO("No.%d sector: min_dist %f", i, min_dist );
+            // ROS_INFO("No.%d sector: min_dist %f", i, min_dist );
             if( (safety_distance+robot_radius)/(min_dist+robot_radius) < 0.86 )
                 enlarge_angle = asin((safety_distance+robot_radius)/(min_dist+robot_radius));
             else
                 enlarge_angle = 1.05;
 
             angle_deg = enlarge_angle*180.0/3.14159;
-            ROS_INFO("No.%d sector: angle %f", i, angle_deg );
+            // ROS_INFO("No.%d sector: angle %f", i, angle_deg );
 
             if(angle_deg > 8.0 && angle_deg < 12.0)
             {
@@ -716,6 +703,12 @@ void VFHfollowing::findCandidate ()
         {
             cn = valleys[j][(int)valley_size/2];
             candidates.push_back(cn);
+
+            if(sectordiff (target_sector, cn) == 1)
+            {
+                candidates.push_back(target_sector);
+            }
+
         }
 
     }
@@ -791,7 +784,6 @@ void VFHfollowing::computeSteering()
     tar_dist = sqrt(delta_x*delta_x + delta_y*delta_y);
 
 
-    // special case, when it just needs to go straight
     if(tar_dist < 0.1 && ( current_tar == -1|| current_tar >= TARGET_NUMBER-1) )
     {
         vel_msg.linear.x = 0.0;
@@ -799,9 +791,10 @@ void VFHfollowing::computeSteering()
         vel_pub.publish(vel_msg);
         return;
     }
+    // special case, when it just needs to go straight
     else if(prev_sector == 0)
     {
-        vel_msg.linear.x = lin_vel;
+        vel_msg.linear.x = lin_vel * 1.5;
         vel_msg.angular.z = 0.0;
         vel_pub.publish(vel_msg);
         arc_points.clear();
@@ -813,11 +806,11 @@ void VFHfollowing::computeSteering()
         return;
     }
     // special case of turning too much, do a pure turning first
-    else if(prev_sector > 9 && prev_sector < 31 )
+    else if(prev_sector > 8 && prev_sector < 32 )
     {
         vel_msg.linear.x = 0.0;
         int sec_err = sectordiff (prev_sector, current_orientation);
-        vel_msg.angular.z = 0.06 * (double)sec_err;
+        vel_msg.angular.z = 0.2;
         vel_pub.publish(vel_msg);
         arc_points.clear();
         for (int i = 0; i < 4; i++)
@@ -829,27 +822,40 @@ void VFHfollowing::computeSteering()
         // first. compute goal point in robot frame
         ROS_INFO("distance: %f", tar_dist);
 
-        double dist_list[4] = {0.05, 0.15, 0.20, 0.30};
+        double dist_list[8] = {0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40};
+        // we don't want to go further than the target itself
+
+
+        if( tar_dist > 0.20 )
+            for(int i = 0; i < 8; i++)
+            {
+                if(dist_list[i] <= tar_dist)
+                    continue;
+                else{
+                    dist_list[i] = tar_dist;
+                }
+            }
+
         double direction = ((double)prev_sector*9+90.0)*3.14159/180.0;
 
         // ROS_INFO("sector: %d, direction: %f", prev_sector, direction);
 
-        std::pair<double, double> goal_points[4];
+        std::pair<double, double> goal_points[8];
 
         double sind = sin(direction);
         double cosd = cos(direction);
 
 
-        for(int i = 0; i < 4; i++)
+        for(int i = 0; i < 8; i++)
         {
             goal_points[i] = std::make_pair(dist_list[i]*cosd , dist_list[i]*sind);
             // ROS_INFO("goal_x: %f, goal_y: %f", dist_list[i]*cosd, dist_list[i]*sind);
         }
 
-        double tar_radius[4] = {1.0, 1.0, 1.0, 1.0};
+        double tar_radius[8] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
         // when radius < 0, center of circle is on the right
         // when radius > 0, center of circle is on the left
-        for(int i = 0; i < 4; i++)
+        for(int i = 0; i < 8; i++)
         {
             tar_radius[i] = -( dist_list[i]*dist_list[i]/( 2*(goal_points[i].first) ) ) ;
             // std::cerr << std::endl;
@@ -857,7 +863,7 @@ void VFHfollowing::computeSteering()
         }
 
         // center of that arc is at (radius, 0) in robot frame
-        int zone_num = 4;
+        int zone_num = 8;
         double alpha;
         double ang_step;
         std::vector<double> check_ang;
@@ -872,7 +878,7 @@ void VFHfollowing::computeSteering()
         bool valid_arc;
 
 
-        for(int i = 0; i < 4; i++)
+        for(int i = 0; i < 8; i++)
         {
             alpha = atan2((goal_points[i].second), (goal_points[i].first)+tar_radius[i]);
             // ROS_INFO("alpha %d: %f", i, alpha);
@@ -899,7 +905,7 @@ void VFHfollowing::computeSteering()
             valid_arc = true;
             for(int j = 0; j < zone_num; j++)
             {
-                Len = fabs(tar_radius[i]) + 0.14; // 0.14 is the distance we want to guarrantee so that our corner won't hit the wall
+                Len = fabs(tar_radius[i]) + robot_radius + 0.04; // 0.14 is the distance we want to guarrantee so that our corner won't hit the wall
                 px = -tar_radius[i] + Len * cos(check_ang[j]);
                 py = 0.0 + Len * sin(check_ang[j]);
                 // ROS_INFO("px: %f, py: %f", px, py);
@@ -931,6 +937,7 @@ void VFHfollowing::computeSteering()
         // send out velocity
         vel_msg.linear.x = lin_vel;
         vel_msg.angular.z = lin_vel / tar_radius[valid_max];
+
         vel_pub.publish(vel_msg);
     }
 }
@@ -1064,10 +1071,8 @@ void VFHfollowing::run()
 
             scan_pub.publish(msg);
 
-
             // Euler angle here is changed into degrees
             ROS_INFO("Robot angle: %f || Robot position: %f, %f || Target position %f, %f ", Euler[0]*(180.0/3.14159), Rob_Pos[0], Rob_Pos[1], target_position[0], target_position[1] );
-
         }
 
         ros::spinOnce();
