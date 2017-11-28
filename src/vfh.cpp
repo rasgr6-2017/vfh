@@ -64,9 +64,14 @@ public:
 
     int sector_operator(int sec, int change);
 
+    void deadend_check();
+
 private:
+    ros::Time last_target;
+
     double raw_scan[360];
     double scan_mag[360];
+    double closest[40];
 
     std::vector<double> ph;
     std::vector<int> bh;
@@ -141,7 +146,7 @@ VFHfollowing::VFHfollowing()
     para_b = 0.7;
 
     robot_radius = 0.125;
-    safety_distance = 0.03;
+    safety_distance = 0.015;
 
     sector_size = 9;
     one_degree = 0.0174532923847;
@@ -215,7 +220,7 @@ void VFHfollowing::getScan(sensor_msgs::LaserScan scan_msg)
       }
 
       // to eliminate the points due to back corner
-      for(int i = 150; i < 210; i++)
+      for(int i = 160; i < 200; i++)
       {
           if(isinf(scan_msg.ranges[i]))
           {
@@ -274,7 +279,6 @@ void VFHfollowing::getTarget(std_msgs::Float32MultiArray tar_msg)
 {
     // get the target position
     // and compute the target sector using odometry
-
     if(current_tar == -1)
         current_tar = 0;
 
@@ -299,8 +303,17 @@ void VFHfollowing::getTarget(std_msgs::Float32MultiArray tar_msg)
         i++;
         ss << tar_msg.data[i] << " ], ";
     }
-    std::cerr << ss.str();
+    // std::cerr << ss.str();
 
+    // print out the time since last target
+    if(current_tar > 0){
+        ros::Duration time_duration = ros::Time::now() - last_target;
+        ROS_INFO("time since last target: %.4f", time_duration.toSec());
+        if (time_duration.toSec() > 12)
+        {
+            ROS_INFO("we might have stuck here!");
+        }
+    }
     // transform the target point in the robot frame
     double hr = Euler[0];
     double xr = Rob_Pos[0];
@@ -324,9 +337,10 @@ void VFHfollowing::getTarget(std_msgs::Float32MultiArray tar_msg)
         tar_x = (target_position[0] - xr) * sin(hr) - (target_position[1] - yr) * cos(hr);
         tar_y = (target_position[0] - xr) * cos(hr) + (target_position[1] - yr) * sin(hr);
 
-        if( tar_dist < 0.11|| (tar_y < 0 && tar_dist < 0.13) )
+        if( tar_dist < 0.12 )
         {
             ROS_INFO("we are here!");
+            last_target = ros::Time::now();
             if(current_tar < TARGET_NUMBER-1)
                 current_tar += 1;
             else{
@@ -339,7 +353,7 @@ void VFHfollowing::getTarget(std_msgs::Float32MultiArray tar_msg)
         }
     }
 
-    ROS_INFO("target in rob frame (%.3f, %.3f)", tar_x, tar_y);
+    // ROS_INFO("target in rob frame (%.3f, %.3f)", tar_x, tar_y);
 
     double theta = fmod(atan2(tar_y, tar_x) + 4.7124, 6.2832) ;
 
@@ -380,37 +394,10 @@ void VFHfollowing::computeMag ()
     {
         item1 = 17*cos((double)(i-179)*3.1415926/180.0);
         true_dist = raw_scan[i] - (item1+sqrt(item1*item1 + 961.32))/200.0;
-        scan_mag[i] = certainty[i] * certainty[i] * (para_a -  para_b * sqrt(true_dist) );
+        scan_mag[i] = certainty[i] * certainty[i] * (para_a -  para_b * sqrt(true_dist));
         // ss << ' ' << (item1+sqrt(item1*item1 + 961.32))/200.0;
     }
     // std::cerr << ss.str() << std::endl;
-
-
-    // eliminate the outliers
-    /*
-    for(int i = 0; i < 360; i++)
-    {
-        if( fabs(raw_scan[i] - range_max) < 0.01 )
-        {
-            scan_mag[i] = certainty[i] * certainty[i] * 0.05;
-            continue;
-        }
-
-        average = (window - raw_scan[i])/4.0;
-        if( fabs(raw_scan[i] - average) > 0.5 )
-        {
-            ROS_INFO("outlier! %f, %f ", raw_scan[i], average);
-            scan_mag[i] = certainty[i] * certainty[i] * (para_a -  para_b * average * average);
-        }
-        else{
-            scan_mag[i] = certainty[i] * certainty[i] * (para_a -  para_b * raw_scan[i] * raw_scan[i]);
-        }
-
-        minus_num = ((i-2)+360)%360;
-        add_num = ((i+3)+360)%360;
-        window = window + raw_scan[add_num] - raw_scan[minus_num];
-    }
-    */
 }
 
 void VFHfollowing::enlargeObs()
@@ -421,42 +408,41 @@ void VFHfollowing::enlargeObs()
     int start = (sector_size - 1) / 2;
 
     double max_temp = 0;
+    double min_temp = 10.0;
 
     ph.clear();
 
     for(int j = 0; j < start; j++)
     {
         if (scan_mag[j] > max_temp)
-        {
             max_temp = scan_mag[j];
-        }
+        if (raw_scan[j] < min_temp)
+            min_temp = raw_scan[j];
     }
     for(int j = 359 - start; j < 360; j++)
     {
         if (scan_mag[j] > max_temp)
-        {
             max_temp = scan_mag[j];
-        }
+        if (raw_scan[j] < min_temp)
+            min_temp = raw_scan[j];
     }
-
     ph.push_back(max_temp);
-
+    closest[0] = min_temp;
     for(int i = 1 ; i < 360/sector_size ; i++)
     {
         // using max let the follower be fragile to outlier !
         max_temp = 0;
-
+        min_temp = 10.0;
         for (int j = start + (i-1)*sector_size; j < start + i*sector_size; j++)
         {
             if (scan_mag[j] > max_temp)
-            {
                 max_temp = scan_mag[j];
-            }
+            if (raw_scan[j] < min_temp)
+                min_temp = raw_scan[j];
         }
-
         ph.push_back(max_temp);
+        closest[i] = min_temp;
     }
-
     // then, ph(primary histogram is filled)
 
     // englarge obstacle, needs distance to compute how large the angle should be
@@ -538,8 +524,6 @@ int VFHfollowing::sector_operator(int sec, int change)
 
 void VFHfollowing::getMPH ()
 {
-    // it is necessary!
-
     // what we have now is a binary histogram showing the obstacles
     std::vector<int> temp_bh;
     double min_dist;
@@ -561,13 +545,13 @@ void VFHfollowing::getMPH ()
         else{
             temp_bh[i] = 1;
 
-            min_dist = pow( (para_a - ph[i])/para_b ,2.0) + 0.04;
+            min_dist = pow( (para_a - ph[i])/para_b ,2.0) + 0.03;
             // ROS_INFO("No.%d sector: min_dist %f", i, min_dist );
             if( (safety_distance+robot_radius)/(min_dist+robot_radius) < 0.86 )
                 enlarge_angle = asin((safety_distance+robot_radius)/(min_dist+robot_radius));
             else
                 enlarge_angle = 1.05;
-
+            // --- obstacle enlargement ---
             angle_deg = enlarge_angle*180.0/3.14159;
             // ROS_INFO("No.%d sector: angle %f", i, angle_deg );
 
@@ -576,7 +560,7 @@ void VFHfollowing::getMPH ()
                 sector_range = 1;
             }
             else{
-                sector_range = (int)floor(angle_deg/12.0);
+                sector_range = (int)floor(angle_deg/15.0);
             }
             if (sector_range > 3)
                 sector_range = 3;
@@ -587,7 +571,27 @@ void VFHfollowing::getMPH ()
         }
     }
     bh = temp_bh;
-    // ROS_INFO("finish");
+}
+
+void VFHfollowing::deadend_check()
+{
+    int check_range = 5;
+    int check_sector = 0;
+    bool dead_end = true;
+    for(int i = 1; i < check_range; i++)
+    {
+        check_sector = (target_sector + i)%40;
+        if (bh[check_sector] == 0)
+            dead_end = false;
+    }
+    for(int i = 1; i < check_range; i++)
+    {
+        check_sector = (target_sector - i + 40)%40;
+        if (bh[check_sector] == 0)
+            dead_end = false;
+    }
+    if (dead_end == true)
+        ROS_INFO("Warning: we are at a dead end!");
 }
 
 void VFHfollowing::findCandidate ()
@@ -653,7 +657,6 @@ void VFHfollowing::findCandidate ()
              ss << ' ' << valleys[p][q];
         }
     }
-
     // std::cerr << ss.str() << std::endl;
 
     // find the candidate direction sector
@@ -662,8 +665,6 @@ void VFHfollowing::findCandidate ()
     int cr, cl, cn;
     for(int j = 0; j < valleys.size(); j++)
     {
-
-
         valley_size = valleys[j].size();
         if(valley_size == 0)
         {
@@ -683,21 +684,16 @@ void VFHfollowing::findCandidate ()
             if ( valleys[j][0] > valleys[j][valley_size-1] )
             {
                 if( target_sector < cl || target_sector > cr )
-                {
                     candidates.push_back(target_sector);
-                }
             }
 
             if ( valleys[j][0] < valleys[j][valley_size-1] )
             {
                 if( target_sector < cl && target_sector > cr )
-                {
                     candidates.push_back(target_sector);
-                }
             }
 
         }
-
         // narrow valley
         if (valley_size <= s_max)
         {
@@ -712,7 +708,6 @@ void VFHfollowing::findCandidate ()
         }
 
     }
-
     /*
     std::stringstream ssr;
 
@@ -745,7 +740,6 @@ void VFHfollowing::findCandidate ()
             min_index = j;
         }
     }
-
     prev_sector = candidates[min_index];
 }
 
@@ -761,19 +755,16 @@ int VFHfollowing::sectordiff(int sec1, int sec2)
         return a2;
     else
         return a3;
-
 }
 
 int VFHfollowing::checkdirection(int sec1, int sec2)
 {
     // 0: sec1 is "right" and sec2 is "left"
     // 1: sec1 is "left"  and sec2 is "right"
-
 }
 
 void VFHfollowing::computeSteering()
 {
-
     // compute for the ang_vel and lin_vel for robot to go
     double lin_vel, ang_vel;
     geometry_msgs::Twist vel_msg;
@@ -782,7 +773,6 @@ void VFHfollowing::computeSteering()
     double delta_x = target_position[0] - Rob_Pos[0];
     double delta_y = target_position[1] - Rob_Pos[1];
     tar_dist = sqrt(delta_x*delta_x + delta_y*delta_y);
-
 
     if(tar_dist < 0.1 && ( current_tar == -1|| current_tar >= TARGET_NUMBER-1) )
     {
@@ -806,11 +796,14 @@ void VFHfollowing::computeSteering()
         return;
     }
     // special case of turning too much, do a pure turning first
-    else if(prev_sector > 8 && prev_sector < 32 )
+    else if(prev_sector > 9 && prev_sector < 31 )
     {
         vel_msg.linear.x = 0.0;
         int sec_err = sectordiff (prev_sector, current_orientation);
-        vel_msg.angular.z = 0.2;
+        if (prev_sector < 20)
+            vel_msg.angular.z = 0.3;
+        else
+            vel_msg.angular.z = -0.3;
         vel_pub.publish(vel_msg);
         arc_points.clear();
         for (int i = 0; i < 4; i++)
@@ -820,13 +813,13 @@ void VFHfollowing::computeSteering()
     }
     else{
         // first. compute goal point in robot frame
-        ROS_INFO("distance: %f", tar_dist);
+        // ROS_INFO("distance: %f", tar_dist);
 
         double dist_list[8] = {0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40};
+
         // we don't want to go further than the target itself
-
-
-        if( tar_dist > 0.20 )
+        /*
+        if( tar_dist >= 0.15 )
             for(int i = 0; i < 8; i++)
             {
                 if(dist_list[i] <= tar_dist)
@@ -835,6 +828,7 @@ void VFHfollowing::computeSteering()
                     dist_list[i] = tar_dist;
                 }
             }
+        */
 
         double direction = ((double)prev_sector*9+90.0)*3.14159/180.0;
 
@@ -885,7 +879,10 @@ void VFHfollowing::computeSteering()
             check_ang.clear();
             if(tar_radius[i] > 0) // center is on the left of lidar
             {
+                while(alpha / (double)zone_num > 0.157)
+                    zone_num++;
                 ang_step = alpha / (double)zone_num;
+
                 for(int j = 0; j < zone_num; j++)
                 {
                     check_ang.push_back(0.0 + ang_step*(j+1));
@@ -893,6 +890,9 @@ void VFHfollowing::computeSteering()
                 }
             }
             else{ // center is on the right of lidar
+
+                while((3.1415926 - alpha)/ (double)zone_num > 0.157)
+                    zone_num++;
                 ang_step = (3.1415926 - alpha) / (double)zone_num;
                 for(int j = 0; j < zone_num; j++)
                 {
@@ -903,25 +903,30 @@ void VFHfollowing::computeSteering()
 
             check_point.clear();
             valid_arc = true;
+            int zone_left, zone_right;
             for(int j = 0; j < zone_num; j++)
             {
-                Len = fabs(tar_radius[i]) + robot_radius + 0.04; // 0.14 is the distance we want to guarrantee so that our corner won't hit the wall
+                Len = fabs(tar_radius[i]) + robot_radius + safety_distance; // 0.14 is the distance we want to guarrantee so that our corner won't hit the wall
                 px = -tar_radius[i] + Len * cos(check_ang[j]);
                 py = 0.0 + Len * sin(check_ang[j]);
-                // ROS_INFO("px: %f, py: %f", px, py);
+                // ROS_INFO("ang %.3f px: %.3f, py: %.3f", check_ang[j]*180.0/3.14159, px, py);
 
                 rho = atan2(py, px) * 180.0/3.1415926;
                 rho_ceil = ceil(rho);
                 rho_floor = floor(rho);
 
                 rho_ceil = fmod((rho_ceil + 360.0 - 91.0), 360);
-                rho_floor = fmod((rho_ceil + 360.0 - 91.0), 360);
+                rho_floor = fmod((rho_floor + 360.0 - 91.0), 360);
 
                 // check whether obstacle is in range
                 reach = sqrt( px*px + py*py );
                 check_point.push_back(std::make_pair(reach, rho+90.0));
-                // ROS_INFO("reach: %f, rho: %f", reach, rho);
-                if ( (raw_scan[(int)rho_ceil] + raw_scan[(int)rho_floor]) / 2.0 <= reach )
+                zone_right = (((int)rho_ceil+364)%360)/9;
+                zone_left = (((int)rho_floor+364)%360)/9;
+                // ROS_INFO("reach: %f, obs in <%d, %d>: %.3f, %.3f", reach, zone_left, zone_right, closest[zone_right], closest[zone_left]);
+                // ROS_INFO("ceil %d, floor %d, average %.3f", (int)rho_ceil, (int)rho_floor, (raw_scan[(int)rho_ceil] + raw_scan[(int)rho_floor])/2.0);
+                // if ( (raw_scan[(int)rho_ceil] + raw_scan[(int)rho_floor]) / 2.0 <= reach )
+                if ((closest[zone_right] + closest[zone_left])/2.0 <= reach )
                 {
                     valid_arc = false;
                     break;
@@ -931,12 +936,24 @@ void VFHfollowing::computeSteering()
             {
                 valid_max = i;
                 arc_points = check_point;
-                // ROS_INFO("chosen distance: %f ", dist_list[i]);
             }
         }
         // send out velocity
-        vel_msg.linear.x = lin_vel;
-        vel_msg.angular.z = lin_vel / tar_radius[valid_max];
+
+        // ROS_INFO("radius: %f;  dist: %f",tar_radius[valid_max],dist_list[valid_max]);
+
+        if (dist_list[valid_max] <= 0.10)
+        {
+            vel_msg.linear.x = 0;
+            if (tar_radius[valid_max] > 0)
+                vel_msg.angular.z = 0.3;
+            else
+                vel_msg.angular.z = -0.3;
+        }
+        else{
+            vel_msg.linear.x = lin_vel;
+            vel_msg.angular.z = lin_vel / (tar_radius[valid_max]-0.05);
+        }
 
         vel_pub.publish(vel_msg);
     }
@@ -1004,7 +1021,7 @@ void VFHfollowing::EulerQuaternion(geometry_msgs::PoseStamped odom)
 
 void VFHfollowing::run()
 {
-    ros::Rate r(5);
+    ros::Rate r(8);
 
     while (ros::ok()) {
 
@@ -1018,6 +1035,8 @@ void VFHfollowing::run()
             getBPH ();
 
             getMPH ();
+
+            deadend_check();
 
             // ROS_INFO("looking for candidates!");
             findCandidate ();
@@ -1072,7 +1091,7 @@ void VFHfollowing::run()
             scan_pub.publish(msg);
 
             // Euler angle here is changed into degrees
-            ROS_INFO("Robot angle: %f || Robot position: %f, %f || Target position %f, %f ", Euler[0]*(180.0/3.14159), Rob_Pos[0], Rob_Pos[1], target_position[0], target_position[1] );
+            // ROS_INFO("Robot angle: %f || Robot position: %f, %f || Target position %f, %f ", Euler[0]*(180.0/3.14159), Rob_Pos[0], Rob_Pos[1], target_position[0], target_position[1] );
         }
 
         ros::spinOnce();
