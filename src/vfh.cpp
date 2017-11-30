@@ -68,6 +68,7 @@ public:
 
 private:
     ros::Time last_target;
+    bool stopped;
 
     double raw_scan[360];
     double scan_mag[360];
@@ -136,6 +137,8 @@ VFHfollowing::VFHfollowing()
         raw_scan[i] = 1;
         certainty[i] = 1;
     }
+
+    stopped = false;
 
     countdown = 1;
     TARGET_NUMBER = 1;
@@ -303,7 +306,8 @@ void VFHfollowing::getTarget(std_msgs::Float32MultiArray tar_msg)
         i++;
         ss << tar_msg.data[i] << " ], ";
     }
-    // std::cerr << ss.str();
+    // if (current_tar == 0)
+        // std::cerr << ss.str();
 
     // print out the time since last target
     if(current_tar > 0){
@@ -339,13 +343,14 @@ void VFHfollowing::getTarget(std_msgs::Float32MultiArray tar_msg)
 
         if( tar_dist < 0.12 )
         {
-            ROS_INFO("we are here!");
+            ROS_INFO("we are here! [%.3f, %.3f]", target_position[0], target_position[1]);
             last_target = ros::Time::now();
             if(current_tar < TARGET_NUMBER-1)
                 current_tar += 1;
             else{
                 break;
             }
+            ROS_INFO("Next target: [%.3f, %.3f]", target_sequence[current_tar].first, target_sequence[current_tar].second);
         }
         else
         {
@@ -776,9 +781,13 @@ void VFHfollowing::computeSteering()
 
     if(tar_dist < 0.1 && ( current_tar == -1|| current_tar >= TARGET_NUMBER-1) )
     {
-        vel_msg.linear.x = 0.0;
-        vel_msg.angular.z = 0.0;
-        vel_pub.publish(vel_msg);
+        if (stopped == false)
+        {
+            vel_msg.linear.x = 0.0;
+            vel_msg.angular.z = 0.0;
+            vel_pub.publish(vel_msg);
+            stopped = true;
+        }
         return;
     }
     // special case, when it just needs to go straight
@@ -787,12 +796,12 @@ void VFHfollowing::computeSteering()
         vel_msg.linear.x = lin_vel * 1.5;
         vel_msg.angular.z = 0.0;
         vel_pub.publish(vel_msg);
+        stopped = false;
         arc_points.clear();
         for (int i = 0; i < 4; i++)
         {
             arc_points.push_back(std::make_pair(0.15+0.1*i, 180.0));
         }
-
         return;
     }
     // special case of turning too much, do a pure turning first
@@ -805,6 +814,7 @@ void VFHfollowing::computeSteering()
         else
             vel_msg.angular.z = -0.3;
         vel_pub.publish(vel_msg);
+        stopped = false;
         arc_points.clear();
         for (int i = 0; i < 4; i++)
         {
@@ -956,6 +966,7 @@ void VFHfollowing::computeSteering()
         }
 
         vel_pub.publish(vel_msg);
+        stopped = false;
     }
 }
 
@@ -1091,7 +1102,7 @@ void VFHfollowing::run()
             scan_pub.publish(msg);
 
             // Euler angle here is changed into degrees
-            // ROS_INFO("Robot angle: %f || Robot position: %f, %f || Target position %f, %f ", Euler[0]*(180.0/3.14159), Rob_Pos[0], Rob_Pos[1], target_position[0], target_position[1] );
+            ROS_INFO("Robot position: %f, %f ", Rob_Pos[0], Rob_Pos[1]);
         }
 
         ros::spinOnce();
