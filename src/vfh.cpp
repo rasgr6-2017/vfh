@@ -322,6 +322,17 @@ void VFHfollowing::getTarget(std_msgs::Float32MultiArray tar_msg)
         if (time_duration.toSec() > 12)
         {
             ROS_INFO("we might have stuck here!");
+            /*
+            geometry_msgs::Twist vel_msg;
+            vel_msg.linear.x = 0.3;
+            vel_msg.angular.z = 0.0;
+            vel_pub.publish(vel_msg);
+            ros::Duration(0.6).sleep();
+            vel_msg.linear.x = 0.0;
+            vel_msg.angular.z = 0.0;
+            vel_pub.publish(vel_msg);
+            ros::Duration(0.4).sleep();
+            */
         }
     }
     // transform the target point in the robot frame

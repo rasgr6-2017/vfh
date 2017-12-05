@@ -1,11 +1,11 @@
 <launch>
-	<!-- include file="$(find path_planning)/launch/planning.launch"/-->
+	<include file="$(find path_planning)/launch/planning.launch"/>
   	<node pkg="vfh" type="vfh" name="vfh" output="screen" />
-	<param name="basic_linear_speed" type="double" value="0.08" />
-	<param name="basic_angular_speed" type="double" value="0.3" />
+	<param name="basic_linear_speed" type="double" value="0.10" />
+	<param name="basic_angular_speed" type="double" value="0.4" />
 	<param name="wall_sector" type="int" value="34" />
-	<param name="min_radius" type="double" value="0.7" />
-	<param name="straight_ratio" type="double" value="1.5" />
+	<param name="min_radius" type="double" value="0.07" />
+	<param name="straight_ratio" type="double" value="1.2" />
 	<param name="is_wall_follower" type="bool" value="false" />
-	<param name="vfh_frequency" type="int" value="15" />
+	<param name="vfh_frequency" type="int" value="20" />
 </launch>
